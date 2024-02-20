@@ -32,14 +32,14 @@ func NewOrchestrator(db *sql.DB) *Orchestrator {
 	}
 }
 
-func (o *Orchestrator) HandleCalculateRequest(expression string) (int, error) {
+func (o *Orchestrator) HandleCalculateRequest(expression string, op1, op2, op3, op4, op5 int) (int, error) {
 	// Проверяем выражение
 	if !isValidExpression(expression) {
 		return 0, errors.New("invalid expression")
 	}
 
 	// Записываем выражение в базу данных
-	expressionID, err := o.saveExpression(expression)
+	expressionID, isInSQL, err := o.saveExpression(expression)
 	if err != nil {
 		return 0, err
 	}
@@ -56,14 +56,38 @@ func (o *Orchestrator) HandleCalculateRequest(expression string) (int, error) {
 		return 0, err
 	}
 
+	//Cчитаем время
+	if !isInSQL {
+		total := Time(expression, op1, op2, op3, op4, op5)
+		time.Sleep(time.Duration(total) * time.Millisecond)
+	}
+
 	return result, nil
 }
 
-func (o *Orchestrator) saveExpression(expression string) (int, error) {
+func Time(expr string, op1, op2, op3, op4, op5 int) int {
+	totaltime := 0
+	for token := range expr {
+		if token == '+' {
+			totaltime += op1
+		} else if token == '-' {
+			totaltime += op2
+		} else if token == '/' {
+			totaltime += op3
+		} else if token == '*' {
+			totaltime += op4
+		} else if token == '^' {
+			totaltime += op5
+		}
+	}
+	return totaltime
+}
+
+func (o *Orchestrator) saveExpression(expression string) (int, bool, error) {
 	// Проверяем, нет ли уже результата в базе данных
 	rows, err := o.Database.Query("SELECT id, expression, result, status FROM expressions WHERE expression = ?", expression)
 	if err != nil {
-		return 0, fmt.Errorf("database error: %v", err)
+		return 0, false, fmt.Errorf("database error: %v", err)
 	}
 	defer rows.Close()
 
@@ -73,7 +97,7 @@ func (o *Orchestrator) saveExpression(expression string) (int, error) {
 		var result sql.NullInt64
 
 		if err := rows.Scan(&id, &express, &result, &status); err != nil {
-			return 0, fmt.Errorf("error scanning row: %v ", err)
+			return 0, false, fmt.Errorf("error scanning row: %v ", err)
 		}
 
 		// Проверяем, было ли значение result сканировано успешно
@@ -85,20 +109,20 @@ func (o *Orchestrator) saveExpression(expression string) (int, error) {
 		}
 
 		if status == "success" && express == expression {
-			return resultValue, nil
+			return resultValue, true, nil
 		}
 	}
 
 	// Пишем выражение в базу данных и возвращаем его ID
 	res, err := o.Database.Exec("INSERT INTO expressions (expression, status) VALUES (?, ?)", expression, "pending")
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	expressionID, err := res.LastInsertId()
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	return int(expressionID), nil
+	return int(expressionID), false, nil
 }
 
 func (o *Orchestrator) checkAgentAvailability() {
@@ -222,6 +246,13 @@ func main() {
 
 	orchestrator := NewOrchestrator(db)
 
+	//Время выполнения операций(да, надо изменять код). Выполняется в Миллисекундах.
+	opPlus := 1000
+	opMinus := 2000
+	opDivide := 2000
+	opmult := 100
+	opexp := 2000
+
 	// Бесконечный цикл ввода выражений
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -229,7 +260,7 @@ func main() {
 		scanner.Scan()
 		expression := scanner.Text()
 
-		result, err := orchestrator.HandleCalculateRequest(expression)
+		result, err := orchestrator.HandleCalculateRequest(expression, opPlus, opMinus, opDivide, opmult, opexp)
 		if err != nil {
 			fmt.Println("Ошибка:", err)
 		} else {
