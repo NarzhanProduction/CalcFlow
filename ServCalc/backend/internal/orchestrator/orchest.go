@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"database/sql"
 	"encoding/json"
@@ -10,7 +9,6 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"os"
 	"regexp"
 	"strconv"
 	"time"
@@ -22,70 +20,279 @@ type Result struct {
 	Result string `json:"result"`
 }
 
-type Orchestrator struct {
-	Database *sql.DB // База данных для хранения результатов
+type Expression struct {
+	ID         int
+	Expression string
+	Result     int
+	Status     string
 }
 
-func NewOrchestrator(db *sql.DB) *Orchestrator {
-	return &Orchestrator{
-		Database: db,
+func orchestrateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
+
+	expressions, err := getExpressions()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	html := `
+	<!DOCTYPE html>
+	<html>
+	<head>
+		<title>Арифметический калькулятор</title>
+	</head>
+	<body>
+		<h1>Арифметический калькулятор</h1>
+		<form id="expressionForm">
+			<label for="expression">Введите выражение:</label><br>
+			<input type="text" id="expression" name="expression"><br><br>
+			<label for="addition">Время выполнения сложения (в миллисекундах):</label>
+			<input type="text" id="addition" name="addition" value="200"><br>
+			<label for="subtraction">Время выполнения вычитания (в миллисекундах):</label>
+			<input type="text" id="subtraction" name="subtraction" value="200"><br>
+			<label for="multiplication">Время выполнения умножения (в миллисекундах):</label>
+			<input type="text" id="multiplication" name="multiplication" value="200"><br>
+			<label for="division">Время выполнения деления (в миллисекундах):</label>
+			<input type="text" id="division" name="division" value="200"><br><br>
+			<label for="division">Время выполнения степени (в миллисекундах):</label>
+			<input type="text" id="exponent" name="exponent" value="200"><br><br>
+			<button type="submit">Вычислить</button>
+		</form>
+		<div id="result"></div>
+		<h2>Выполненные выражения:</h2>
+		<ul>
+	`
+	for _, expr := range expressions {
+		html += fmt.Sprintf("<li>%s = %d</li>", expr.Expression, expr.Result)
+	}
+	html += `
+		</ul>
+		<script>
+			document.getElementById("expressionForm").addEventListener("submit", function(event) {
+				event.preventDefault();
+				var formData = new FormData(this);
+				fetch("/calculate", {
+					method: "POST",
+					body: formData
+				})
+				.then(response => response.json())
+				.then(data => {
+					if (data.error) {
+						document.getElementById("result").innerText = data.error;
+					} else {
+						document.getElementById("result").innerText = "Результат: " + data.result;
+						var li = document.createElement("li");
+						li.appendChild(document.createTextNode(formData.get("expression") + " = " + data.result));
+						document.getElementById("expressionList").appendChild(li);
+					}
+				})
+				.catch(error => {
+					console.error("Ошибка:", error);
+				});
+			});
+		</script>
+	</body>
+	</html>
+	`
+	fmt.Fprintf(w, html)
 }
 
-func (o *Orchestrator) HandleCalculateRequest(expression string, op1, op2, op3, op4, op5 int) (int, error) {
+// Обработчик для вычисления выражения
+func calcHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	expr := r.FormValue("expression")
+	if expr == "" {
+		http.Error(w, "Expression is required", http.StatusBadRequest)
+		return
+	}
+	add, err := strconv.Atoi(r.FormValue("addition"))
+	if err != nil {
+		http.Error(w, "Invalid addition speed", http.StatusBadRequest)
+		return
+	}
+	subt, err := strconv.Atoi(r.FormValue("subtraction"))
+	if err != nil {
+		http.Error(w, "Invalid subtraction speed", http.StatusBadRequest)
+		return
+	}
+	multip, err := strconv.Atoi(r.FormValue("multiplication"))
+	if err != nil {
+		http.Error(w, "Invalid multiplication speed", http.StatusBadRequest)
+		return
+	}
+	div, err := strconv.Atoi(r.FormValue("division"))
+	if err != nil {
+		http.Error(w, "Invalid division speed", http.StatusBadRequest)
+		return
+	}
+	exp, err := strconv.Atoi(r.FormValue("exponent"))
+	if err != nil {
+		http.Error(w, "Invalid division speed", http.StatusBadRequest)
+		return
+	}
+	fmt.Println(add, subt, multip, div, exp)
+
+	result, err := HandleCalculateRequest(expr, add, subt, multip, div, exp)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Обертываем результат в JSON и отправляем клиенту
+	response := Result{Result: strconv.Itoa(result)}
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		http.Error(w, "Error encoding JSON", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(jsonResponse)
+}
+
+func getExpressions() ([]Expression, error) {
+	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
+	if err != nil {
+		log.Fatal("Ошибка открытия базы данных:", err)
+	}
+
+	defer db.Close()
+	rows, err := db.Query("SELECT id, expression, result, status FROM expressions")
+	if err != nil {
+		return nil, fmt.Errorf("ошибка выбора таблицы из базы данных: %v", err)
+	}
+	defer rows.Close()
+
+	var expressions []Expression
+	for rows.Next() {
+		var exp Expression
+		var result sql.NullInt64
+		if err := rows.Scan(&exp.ID, &exp.Expression, &result, &exp.Status); err != nil {
+			return nil, fmt.Errorf("ошибка при сканировании строк: %v", err)
+		}
+
+		// Если значение Result пустое, заменяем его на 0
+
+		if result.Valid {
+			exp.Result = int(result.Int64)
+		} else if !result.Valid {
+			exp.Result = 0 // Или любое другое значение по умолчанию
+		}
+
+		expressions = append(expressions, exp)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ошибка при сканировании строк: %v", err)
+	}
+
+	return expressions, nil
+}
+
+func HandleCalculateRequest(expression string, op1, op2, op3, op4, op5 int) (int, error) {
 	// Проверяем выражение
 	if !isValidExpression(expression) {
 		return 0, errors.New("invalid expression")
 	}
 
 	// Записываем выражение в базу данных
-	expressionID, isInSQL, err := o.saveExpression(expression)
+	expressionID, isInSQL, err := saveExpression(expression)
 	if err != nil {
 		return 0, err
 	}
 
 	// Отправляем выражение агенту для вычисления
-	result, err := o.computeExpression(expression)
+	result, err := computeExpression(expression)
 	if err != nil {
 		return 0, err
 	}
 
 	// Обновляем результат вычисления в базе данных
-	err = o.updateExpressionResult(expressionID, result)
+	err = updateExpressionResult(expressionID, result)
 	if err != nil {
 		return 0, err
 	}
 
 	//Cчитаем время
-	if !isInSQL {
-		total := Time(expression, op1, op2, op3, op4, op5)
-		time.Sleep(time.Duration(total) * time.Millisecond)
+	if isInSQL {
+		resultReady, err := getOneExpression(expression, expressionID)
+		if err != nil {
+			return 0, err
+		}
+
+		return resultReady, nil
 	}
 
+	total := Time(expression, op1, op2, op3, op4, op5)
+	time.Sleep(time.Duration(total) * time.Millisecond)
 	return result, nil
 }
 
 func Time(expr string, op1, op2, op3, op4, op5 int) int {
 	totaltime := 0
-	for token := range expr {
-		if token == '+' {
+	for _, token := range expr {
+		switch {
+		case token == '+':
 			totaltime += op1
-		} else if token == '-' {
+		case token == '-':
 			totaltime += op2
-		} else if token == '/' {
+		case token == '*':
 			totaltime += op3
-		} else if token == '*' {
+		case token == '/':
 			totaltime += op4
-		} else if token == '^' {
+		case token == '^':
 			totaltime += op5
 		}
 	}
 	return totaltime
 }
 
-func (o *Orchestrator) saveExpression(expression string) (int, bool, error) {
+func getOneExpression(expr string, exprID int) (int, error) {
+	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
+	if err != nil {
+		log.Fatal("Error opening database:", err)
+	}
+	defer db.Close()
 	// Проверяем, нет ли уже результата в базе данных
-	rows, err := o.Database.Query("SELECT id, expression, result, status FROM expressions WHERE expression = ?", expression)
+	rows, err := db.Query("SELECT id, expression, result FROM expressions WHERE expression = ?", expr)
+	if err != nil {
+		return 0, fmt.Errorf("database error: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id int
+		var expression string
+		var result int
+
+		if err := rows.Scan(&id, &expression, &result); err != nil {
+			return 0, fmt.Errorf("error scanning row: %v ", err)
+		}
+
+		if id == exprID && expression == expr {
+			return result, nil
+		}
+	}
+
+	return 0, nil
+}
+
+func saveExpression(expression string) (int, bool, error) {
+	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
+	if err != nil {
+		log.Fatal("Error opening database:", err)
+	}
+	defer db.Close()
+	// Проверяем, нет ли уже результата в базе данных
+	rows, err := db.Query("SELECT id, expression, result, status FROM expressions WHERE expression = ?", expression)
 	if err != nil {
 		return 0, false, fmt.Errorf("database error: %v", err)
 	}
@@ -100,21 +307,13 @@ func (o *Orchestrator) saveExpression(expression string) (int, bool, error) {
 			return 0, false, fmt.Errorf("error scanning row: %v ", err)
 		}
 
-		// Проверяем, было ли значение result сканировано успешно
-		var resultValue int
-		if result.Valid {
-			resultValue = int(result.Int64)
-		} else {
-			resultValue = 0 // Или любое другое значение по умолчанию
-		}
-
 		if status == "success" && express == expression {
-			return resultValue, true, nil
+			return id, true, nil
 		}
 	}
 
 	// Пишем выражение в базу данных и возвращаем его ID
-	res, err := o.Database.Exec("INSERT INTO expressions (expression, status) VALUES (?, ?)", expression, "pending")
+	res, err := db.Exec("INSERT INTO expressions (expression, status) VALUES (?, ?)", expression, "pending")
 	if err != nil {
 		return 0, false, err
 	}
@@ -125,9 +324,14 @@ func (o *Orchestrator) saveExpression(expression string) (int, bool, error) {
 	return int(expressionID), false, nil
 }
 
-func (o *Orchestrator) checkAgentAvailability() {
+func checkAgentAvailability() {
+	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
+	if err != nil {
+		log.Fatal("Error opening database:", err)
+	}
+	defer db.Close()
 	// Получаем список всех агентов из базы данных
-	rows, err := o.Database.Query("SELECT id, hostname, port, last_ping FROM agents")
+	rows, err := db.Query("SELECT id, hostname, port, last_ping FROM agents")
 	if err != nil {
 		log.Println("Error querying agents:", err)
 		return
@@ -147,7 +351,7 @@ func (o *Orchestrator) checkAgentAvailability() {
 		// Проверяем время последнего пинга
 		if time.Since(lastPing) > 2*time.Minute {
 			// Агент недоступен, обновляем его статус в базе данных
-			if err := o.updateAgentStatus(id, false); err != nil {
+			if err := updateAgentStatus(id, false); err != nil {
 				log.Println("Error updating agent status:", err)
 			}
 		}
@@ -159,15 +363,19 @@ func (o *Orchestrator) checkAgentAvailability() {
 	}
 }
 
-func (o *Orchestrator) updateAgentStatus(agentID int, isAvailable bool) error {
+func updateAgentStatus(agentID int, isAvailable bool) error {
+	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
+	if err != nil {
+		log.Fatal("Error opening database:", err)
+	}
+	defer db.Close()
 	// Обновляем статус агента в базе данных
-	_, err := o.Database.Exec("UPDATE agents SET is_available=?, last_ping=? WHERE id=?", isAvailable, time.Now(), agentID)
+	_, err = db.Exec("UPDATE agents SET is_available=?, last_ping=? WHERE id=?", isAvailable, time.Now(), agentID)
 	return err
 }
 
-func (o *Orchestrator) computeExpression(expression string) (int, error) {
-
-	// Отправляем GET-запрос агенту для вычисления выражения
+func computeExpression(expression string) (int, error) {
+	// Формируем POST-запрос агенту для вычисления выражения
 	requestData := map[string]string{"expression": expression}
 	requestBody, err := json.Marshal(requestData)
 	if err != nil {
@@ -206,14 +414,19 @@ func (o *Orchestrator) computeExpression(expression string) (int, error) {
 	return result, nil
 }
 
-func (o *Orchestrator) updateExpressionResult(expressionID int, result int) error {
+func updateExpressionResult(expressionID int, result int) error {
+	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
+	if err != nil {
+		log.Fatal("Error opening database:", err)
+	}
+	defer db.Close()
 	// Обновляем результат вычисления в базе данных
-	_, err := o.Database.Exec("UPDATE expressions SET result=?, status=? WHERE id=?", result, "success", expressionID)
+	_, err = db.Exec("UPDATE expressions SET result=?, status=? WHERE id=?", result, "success", expressionID)
 	return err
 }
 
 func isValidExpression(expression string) bool {
-	regex := `^[\d\+\-\*\/\(\)]+$`
+	regex := `^[\d\+\-\*\/\(\)\^]+$`
 
 	// Проверяем выражение с помощью регулярного выражения
 	match, err := regexp.MatchString(regex, expression)
@@ -244,27 +457,9 @@ func main() {
 		log.Fatal("Error creating table:", err)
 	}
 
-	orchestrator := NewOrchestrator(db)
+	http.HandleFunc("/", orchestrateHandler)
+	http.HandleFunc("/calculate", calcHandler)
 
-	//Время выполнения операций(да, надо изменять код). Выполняется в Миллисекундах.
-	opPlus := 1000
-	opMinus := 2000
-	opDivide := 2000
-	opmult := 100
-	opexp := 2000
-
-	// Бесконечный цикл ввода выражений
-	scanner := bufio.NewScanner(os.Stdin)
-	for {
-		fmt.Print("Введите выражение: ")
-		scanner.Scan()
-		expression := scanner.Text()
-
-		result, err := orchestrator.HandleCalculateRequest(expression, opPlus, opMinus, opDivide, opmult, opexp)
-		if err != nil {
-			fmt.Println("Ошибка:", err)
-		} else {
-			fmt.Println("Результат:", result)
-		}
-	}
+	// Запускаем сервер
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
