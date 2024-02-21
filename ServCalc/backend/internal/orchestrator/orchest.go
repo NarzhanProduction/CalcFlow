@@ -137,7 +137,6 @@ func calcHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid division speed", http.StatusBadRequest)
 		return
 	}
-	fmt.Println(add, subt, multip, div, exp)
 
 	result, err := HandleCalculateRequest(expr, add, subt, multip, div, exp)
 	if err != nil {
