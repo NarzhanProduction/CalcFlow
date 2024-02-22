@@ -39,62 +39,86 @@ func orchestrateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	html := `
-	<!DOCTYPE html>
+	html := `<!DOCTYPE html>
 	<html>
 	<head>
 		<title>Арифметический калькулятор</title>
+		<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
 	</head>
 	<body>
-		<h1>Арифметический калькулятор</h1>
-		<form id="expressionForm">
-			<label for="expression">Введите выражение:</label><br>
-			<input type="text" id="expression" name="expression"><br><br>
-			<label for="addition">Время выполнения сложения (в миллисекундах):</label>
-			<input type="text" id="addition" name="addition" value="200"><br>
-			<label for="subtraction">Время выполнения вычитания (в миллисекундах):</label>
-			<input type="text" id="subtraction" name="subtraction" value="200"><br>
-			<label for="multiplication">Время выполнения умножения (в миллисекундах):</label>
-			<input type="text" id="multiplication" name="multiplication" value="200"><br>
-			<label for="division">Время выполнения деления (в миллисекундах):</label>
-			<input type="text" id="division" name="division" value="200"><br><br>
-			<label for="division">Время выполнения степени (в миллисекундах):</label>
-			<input type="text" id="exponent" name="exponent" value="200"><br><br>
-			<button type="submit">Вычислить</button>
-		</form>
-		<div id="result"></div>
-		<h2>Выполненные выражения:</h2>
-		<ul>
+		<div class="container mt-5">
+        	<div class="jumbotron">
+            	<a class="btn btn-primary btn-lg" href="/agents" role="button">Агенты</a>
+            	<h1 class="display-4">Арифметический калькулятор</h1>
+            	<hr class="my-4">
+        	</div>
+			<h1>Арифметический калькулятор</h1>
+			<form id="expressionForm">
+				<div class="form-group">
+					<label for="expression">Введите выражение:</label>
+					<input type="text" class="form-control" id="expression" name="expression">
+				</div>
+				<div class="form-group">
+					<label for="addition">Время выполнения сложения (в миллисекундах):</label>
+					<input type="text" class="form-control" id="addition" name="addition" value="200">
+				</div>
+				<div class="form-group">
+					<label for="subtraction">Время выполнения вычитания (в миллисекундах):</label>
+					<input type="text" class="form-control" id="subtraction" name="subtraction" value="200">
+				</div>
+				<div class="form-group">
+					<label for="multiplication">Время выполнения умножения (в миллисекундах):</label>
+					<input type="text" class="form-control" id="multiplication" name="multiplication" value="200">
+				</div>
+				<div class="form-group">
+					<label for="division">Время выполнения деления (в миллисекундах):</label>
+					<input type="text" class="form-control" id="division" name="division" value="200">
+				</div>
+				<div class="form-group">
+					<label for="exponent">Время выполнения степени (в миллисекундах):</label>
+					<input type="text" class="form-control" id="exponent" name="exponent" value="200">
+				</div>
+				<button type="submit" class="btn btn-primary">Вычислить</button>
+			</form>
+			<div id="result" class="mt-3"></div>
+			<h2>Выполненные выражения:</h2>
+			<ul class="list-group" id="expressionList">
 	`
 	for _, expr := range expressions {
 		html += fmt.Sprintf("<li>%s = %d</li>", expr.Expression, expr.Result)
 	}
 	html += `
-		</ul>
+        	</ul>
+    	</div>
+
+    	<script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    	<script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.4/dist/umd/popper.min.js"></script>
+    	<script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+
 		<script>
-			document.getElementById("expressionForm").addEventListener("submit", function(event) {
-				event.preventDefault();
-				var formData = new FormData(this);
-				fetch("/calculate", {
-					method: "POST",
-					body: formData
-				})
-				.then(response => response.json())
-				.then(data => {
-					if (data.error) {
-						document.getElementById("result").innerText = data.error;
-					} else {
-						document.getElementById("result").innerText = "Результат: " + data.result;
-						var li = document.createElement("li");
-						li.appendChild(document.createTextNode(formData.get("expression") + " = " + data.result));
-						document.getElementById("expressionList").appendChild(li);
-					}
-				})
-				.catch(error => {
-					console.error("Ошибка:", error);
-				});
-			});
-		</script>
+        document.getElementById("expressionForm").addEventListener("submit", function(event) {
+            event.preventDefault();
+            var formData = new FormData(this);
+            fetch("/calculate", {
+                method: "POST",
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    document.getElementById("result").innerText = data.error;
+                } else {
+                    document.getElementById("result").innerText = "Результат: " + data.result;
+                    var li = document.createElement("li");
+                    li.appendChild(document.createTextNode(formData.get("expression") + " = " + data.result));
+                    document.getElementById("expressionList").appendChild(li);
+                }
+            })
+            .catch(error => {
+                console.error("Ошибка:", error);
+            });
+        });
+    </script>
 	</body>
 	</html>
 	`
@@ -157,6 +181,36 @@ func calcHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonResponse)
 }
 
+func agentsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	html := `
+	<!DOCTYPE html>
+	<html>
+	<head>
+		<title>Агенты</title>
+		<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+	</head>
+	<body>
+		<div class="container mt-5">
+			<div class="jumbotron">
+				<h1 class="display-4">Агенты</h1>
+				<p class="lead">Страница для просмотра информации об агентах.</p>
+				<hr class="my-4">
+				<a class="btn btn-primary btn-lg" href="/" role="button">Назад к калькулятору</a>
+			</div>
+			<!-- Здесь можно добавить информацию о доступных агентах -->
+		</div>
+	</body>
+	</html>
+	`
+
+	fmt.Fprintf(w, html)
+}
+
 func getExpressions() ([]Expression, error) {
 	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
 	if err != nil {
@@ -207,6 +261,14 @@ func HandleCalculateRequest(expression string, op1, op2, op3, op4, op5 int) (int
 	if err != nil {
 		return 0, err
 	}
+	if isInSQL {
+		resultReady, err := getOneExpression(expression, expressionID)
+		if err != nil {
+			return 0, err
+		}
+
+		return resultReady, nil
+	}
 
 	// Отправляем выражение агенту для вычисления
 	result, err := computeExpression(expression)
@@ -221,15 +283,6 @@ func HandleCalculateRequest(expression string, op1, op2, op3, op4, op5 int) (int
 	}
 
 	//Cчитаем время
-	if isInSQL {
-		resultReady, err := getOneExpression(expression, expressionID)
-		if err != nil {
-			return 0, err
-		}
-
-		return resultReady, nil
-	}
-
 	total := Time(expression, op1, op2, op3, op4, op5)
 	time.Sleep(time.Duration(total) * time.Millisecond)
 	return result, nil
@@ -458,7 +511,31 @@ func main() {
 
 	http.HandleFunc("/", orchestrateHandler)
 	http.HandleFunc("/calculate", calcHandler)
+	http.HandleFunc("/agents", agentsHandler)
+	// http.HandleFunc("/agents", agentsHandler)
 
 	// Запускаем сервер
 	log.Fatal(http.ListenAndServe(":8080", nil))
+
+	//Время выполнения операций(да, надо изменять код). Выполняется в Миллисекундах.
+	// opPlus := 1000
+	// opMinus := 2000
+	// opDivide := 2000
+	// opmult := 100
+	// opexp := 2000
+
+	// // Бесконечный цикл ввода выражений
+	// scanner := bufio.NewScanner(os.Stdin)
+	// for {
+	// 	fmt.Print("Введите выражение: ")
+	// 	scanner.Scan()
+	// 	expression := scanner.Text()
+
+	// 	result, err := HandleCalculateRequest(expression, opPlus, opMinus, opDivide, opmult, opexp)
+	// 	if err != nil {
+	// 		fmt.Println("Ошибка:", err)
+	// 	} else {
+	// 		fmt.Println("Результат:", result)
+	// 	}
+	// }
 }
