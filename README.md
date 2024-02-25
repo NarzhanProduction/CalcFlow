@@ -10,8 +10,8 @@ go get github.com/gorilla/sessions
 В общем, запускаем orchest.go по типу: 
 go run backend/internal/orchestrator/orchest.go
 
-дальше открываем новый терминал и делаем тоже самое с агентом:
-go run backend/internal/orchestrator/orchest.go
+дальше открываем новый терминал(вы всё ещё должны находится в проекте) и делаем тоже самое с агентом:  
+go run backend/internal/agent/agent.go
 
 Оркестратор:   
 1.Есть html cтраница, в ней можно ввести выражение и время выполнения операций(+-*/^).   
