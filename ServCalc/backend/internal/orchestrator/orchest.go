@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"regexp"
 	"strconv"
+	"text/template"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -181,34 +181,126 @@ func calcHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonResponse)
 }
 
-func agentsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+func updateAgentStatus(agentID string, status string) error {
+	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
+	if err != nil {
+		log.Fatal("Ошибка открытия базы данных:", err)
+	}
+
+	defer db.Close()
+
+	_, err = db.Exec("UPDATE agents SET status = ?, last_ping = ? WHERE id = ?", status, time.Now(), agentID)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// Обработчик для принятия пингов от агентов
+func pingHandler(w http.ResponseWriter, r *http.Request) {
+	// Обработка пинга от агента
+	agentID := r.URL.Query().Get("id")
+	if agentID == "" {
+		http.Error(w, "Agent ID is required", http.StatusBadRequest)
 		return
 	}
 
-	html := `
-	<!DOCTYPE html>
-	<html>
-	<head>
-		<title>Агенты</title>
-		<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
-	</head>
-	<body>
-		<div class="container mt-5">
-			<div class="jumbotron">
-				<h1 class="display-4">Агенты</h1>
-				<p class="lead">Страница для просмотра информации об агентах.</p>
-				<hr class="my-4">
-				<a class="btn btn-primary btn-lg" href="/" role="button">Назад к калькулятору</a>
-			</div>
-			<!-- Здесь можно добавить информацию о доступных агентах -->
-		</div>
-	</body>
-	</html>
-	`
+	// Обновляем статус агента в базе данных
+	if err := updateAgentStatus(agentID, "alive"); err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		log.Printf("Error updating agent status: %v", err)
+		return
+	}
 
-	fmt.Fprintf(w, html)
+	log.Printf("Received ping from agent %s", agentID)
+
+	// Перенаправляем на страницу агентов
+	http.Redirect(w, r, "/agents", http.StatusFound)
+}
+
+// Обработчик для отображения информации об агентах
+func agentsHandler(w http.ResponseWriter, r *http.Request) {
+	checkAgentStatus()
+	type AgentInfo struct {
+		ID         string
+		Status     string
+		LastActive time.Time
+	}
+
+	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
+	if err != nil {
+		log.Fatal("Ошибка открытия базы данных:", err)
+	}
+
+	defer db.Close()
+
+	// Выбираем информацию об агентах из базы данных
+	rows, err := db.Query("SELECT id, status, last_ping FROM agents")
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		log.Printf("Error querying agents: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var agents []AgentInfo
+	for rows.Next() {
+		var agent AgentInfo
+		if err := rows.Scan(&agent.ID, &agent.Status, &agent.LastActive); err != nil {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			log.Printf("Error scanning agent row: %v", err)
+			return
+		}
+		agents = append(agents, agent)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		log.Printf("Error iterating over agent rows: %v", err)
+		return
+	}
+
+	// Отображаем страницу агентов с информацией из базы данных
+	tmpl := template.Must(template.New("agents").Parse(`
+			<!DOCTYPE html>
+			<html>
+			<head>
+				<title>Агенты</title>
+				<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+			</head>
+			<body>
+				<div class="container mt-5">
+					<div class="jumbotron">
+						<h1 class="display-4">Агенты</h1>
+						<p class="lead">Страница для просмотра информации об агентах.</p>
+						<hr class="my-4">
+						<table class="table">
+							<thead>
+								<tr>
+									<th>ID</th>
+									<th>Status</th>
+									<th>Last Active</th>
+								</tr>
+							</thead>
+							<tbody>
+								{{range .}}
+								<tr>
+									<td>{{.ID}}</td>
+									<td>{{.Status}}</td>
+									<td>{{.LastActive}}</td>
+								</tr>
+								{{end}}
+							</tbody>
+						</table>
+						<a class="btn btn-primary btn-lg" href="/" role="button">Назад к калькулятору</a>
+					</div>
+				</div>
+			</body>
+			</html>
+	`))
+	if err := tmpl.Execute(w, agents); err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		log.Printf("Error executing template: %v", err)
+	}
 }
 
 func getExpressions() ([]Expression, error) {
@@ -253,7 +345,7 @@ func getExpressions() ([]Expression, error) {
 func HandleCalculateRequest(expression string, op1, op2, op3, op4, op5 int) (int, error) {
 	// Проверяем выражение
 	if !isValidExpression(expression) {
-		return 0, errors.New("invalid expression")
+		return 0, fmt.Errorf("invalid expression")
 	}
 
 	// Записываем выражение в базу данных
@@ -376,56 +468,6 @@ func saveExpression(expression string) (int, bool, error) {
 	return int(expressionID), false, nil
 }
 
-func checkAgentAvailability() {
-	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
-	if err != nil {
-		log.Fatal("Error opening database:", err)
-	}
-	defer db.Close()
-	// Получаем список всех агентов из базы данных
-	rows, err := db.Query("SELECT id, hostname, port, last_ping FROM agents")
-	if err != nil {
-		log.Println("Error querying agents:", err)
-		return
-	}
-	defer rows.Close()
-
-	// Итерируемся по агентам и проверяем их доступность
-	for rows.Next() {
-		var id int
-		var hostname, port string
-		var lastPing time.Time
-		if err := rows.Scan(&id, &hostname, &port, &lastPing); err != nil {
-			log.Println("Error scanning agent row:", err)
-			continue
-		}
-
-		// Проверяем время последнего пинга
-		if time.Since(lastPing) > 2*time.Minute {
-			// Агент недоступен, обновляем его статус в базе данных
-			if err := updateAgentStatus(id, false); err != nil {
-				log.Println("Error updating agent status:", err)
-			}
-		}
-	}
-
-	// Проверяем ошибки после итерации по результатам
-	if err := rows.Err(); err != nil {
-		log.Println("Error iterating over agent rows:", err)
-	}
-}
-
-func updateAgentStatus(agentID int, isAvailable bool) error {
-	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
-	if err != nil {
-		log.Fatal("Error opening database:", err)
-	}
-	defer db.Close()
-	// Обновляем статус агента в базе данных
-	_, err = db.Exec("UPDATE agents SET is_available=?, last_ping=? WHERE id=?", isAvailable, time.Now(), agentID)
-	return err
-}
-
 func computeExpression(expression string) (int, error) {
 	// Формируем POST-запрос агенту для вычисления выражения
 	requestData := map[string]string{"expression": expression}
@@ -490,6 +532,48 @@ func isValidExpression(expression string) bool {
 	return match
 }
 
+func checkAgentStatus() {
+	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
+	if err != nil {
+		log.Fatal("Error opening database:", err)
+	}
+	defer db.Close()
+
+	// Получаем текущее время
+	currentTime := time.Now()
+	var agentID string
+	var lastPing time.Time
+	var timeouttrue bool
+
+	// Выбираем всех агентов из базы данных
+	rows, err := db.Query("SELECT id, last_ping FROM agents")
+	if err != nil {
+		log.Printf("Error querying agents: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	// Проверяем время последнего пинга каждого агента
+	for rows.Next() {
+		if err := rows.Scan(&agentID, &lastPing); err != nil {
+			log.Printf("Error scanning agent row: %v", err)
+			continue
+		}
+		timeout := 10 * time.Second
+
+		// Если время последнего пинга превышает таймаут, помечаем агента как мертвого
+		if currentTime.Sub(lastPing) > timeout {
+			timeouttrue = true
+		}
+	}
+	if timeouttrue {
+		_, err = db.Exec("UPDATE agents SET status = ?, last_ping = ? WHERE id = ?", "dead", time.Now(), agentID)
+		if err != nil {
+			log.Printf("Error updating agent status: %v", err)
+		}
+	}
+}
+
 func main() {
 	// Подключаемся к базе данных
 	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
@@ -512,30 +596,9 @@ func main() {
 	http.HandleFunc("/", orchestrateHandler)
 	http.HandleFunc("/calculate", calcHandler)
 	http.HandleFunc("/agents", agentsHandler)
+	http.HandleFunc("/ping", pingHandler)
 	// http.HandleFunc("/agents", agentsHandler)
 
 	// Запускаем сервер
 	log.Fatal(http.ListenAndServe(":8080", nil))
-
-	//Время выполнения операций(да, надо изменять код). Выполняется в Миллисекундах.
-	// opPlus := 1000
-	// opMinus := 2000
-	// opDivide := 2000
-	// opmult := 100
-	// opexp := 2000
-
-	// // Бесконечный цикл ввода выражений
-	// scanner := bufio.NewScanner(os.Stdin)
-	// for {
-	// 	fmt.Print("Введите выражение: ")
-	// 	scanner.Scan()
-	// 	expression := scanner.Text()
-
-	// 	result, err := HandleCalculateRequest(expression, opPlus, opMinus, opDivide, opmult, opexp)
-	// 	if err != nil {
-	// 		fmt.Println("Ошибка:", err)
-	// 	} else {
-	// 		fmt.Println("Результат:", result)
-	// 	}
-	// }
 }
