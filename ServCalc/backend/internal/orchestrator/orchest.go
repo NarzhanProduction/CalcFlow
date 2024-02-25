@@ -13,7 +13,12 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/gorilla/sessions"
 	_ "github.com/mattn/go-sqlite3"
+)
+
+var (
+	store = sessions.NewCookieStore([]byte("secret-key"))
 )
 
 type Result struct {
@@ -27,11 +32,30 @@ type Expression struct {
 	Status     string
 }
 
+func getOrDefault(value interface{}, defaultValue string) string {
+	if value != nil {
+		if str, ok := value.(string); ok {
+			return str
+		}
+	}
+	return defaultValue
+}
+
 func orchestrateHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	session, _ := store.Get(r, "session-name")
+
+	// Получаем значения из сессии или используем дефолтные значения
+	expression := getOrDefault(session.Values["expression"], "")
+	addition := getOrDefault(session.Values["addition"], "200")
+	subtraction := getOrDefault(session.Values["subtraction"], "200")
+	multiplication := getOrDefault(session.Values["multiplication"], "200")
+	division := getOrDefault(session.Values["division"], "200")
+	exponent := getOrDefault(session.Values["exponent"], "200")
 
 	expressions, err := getExpressions()
 	if err != nil {
@@ -56,27 +80,27 @@ func orchestrateHandler(w http.ResponseWriter, r *http.Request) {
 			<form id="expressionForm">
 				<div class="form-group">
 					<label for="expression">Введите выражение:</label>
-					<input type="text" class="form-control" id="expression" name="expression">
+					<input type="text" class="form-control" id="expression" name="expression" value="` + expression + `"><br>
 				</div>
 				<div class="form-group">
 					<label for="addition">Время выполнения сложения (в миллисекундах):</label>
-					<input type="text" class="form-control" id="addition" name="addition" value="200">
+					<input type="text" class="form-control" id="addition" name="addition" value="` + addition + `"><br>
 				</div>
 				<div class="form-group">
 					<label for="subtraction">Время выполнения вычитания (в миллисекундах):</label>
-					<input type="text" class="form-control" id="subtraction" name="subtraction" value="200">
+					<input type="text" class="form-control" id="subtraction" name="subtraction" value="` + subtraction + `"><br>
 				</div>
 				<div class="form-group">
 					<label for="multiplication">Время выполнения умножения (в миллисекундах):</label>
-					<input type="text" class="form-control" id="multiplication" name="multiplication" value="200">
+					<input type="text" class="form-control" id="multiplication" name="multiplication" value="` + multiplication + `"><br>
 				</div>
 				<div class="form-group">
 					<label for="division">Время выполнения деления (в миллисекундах):</label>
-					<input type="text" class="form-control" id="division" name="division" value="200">
+					<input type="text" class="form-control" id="division" name="division" value="` + division + `"><br>
 				</div>
 				<div class="form-group">
 					<label for="exponent">Время выполнения степени (в миллисекундах):</label>
-					<input type="text" class="form-control" id="exponent" name="exponent" value="200">
+					<input type="text" class="form-control" id="exponent" name="exponent" value="` + exponent + `"><br>
 				</div>
 				<button type="submit" class="btn btn-primary">Вычислить</button>
 			</form>
@@ -166,6 +190,18 @@ func calcHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var notval bool
+
+	session, _ := store.Get(r, "session-name")
+
+	// Получаем значения из POST-запроса
+	expression := r.FormValue("expression")
+	session.Values["expression"] = expression
+	session.Values["addition"] = r.FormValue("addition")
+	session.Values["subtraction"] = r.FormValue("subtraction")
+	session.Values["multiplication"] = r.FormValue("multiplication")
+	session.Values["division"] = r.FormValue("division")
+	session.Values["exponent"] = r.FormValue("exponent")
+	session.Save(r, w)
 
 	// Проверяем выражение
 	if !isValidExpression(expr) {
@@ -277,6 +313,24 @@ func agentsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	timeoutStr := r.URL.Query().Get("timeout")
+	if timeoutStr == "" {
+		timeoutStr = "10" // Значение по умолчанию
+	}
+	timeout, err := strconv.Atoi(timeoutStr)
+	if err != nil {
+		log.Printf("Error parsing timeout value: %v", err)
+		http.Error(w, "Invalid timeout value", http.StatusBadRequest)
+		return
+	}
+
+	// Сохраняем значение таймаута в сессии
+	session, _ := store.Get(r, "session-name")
+	session.Values["timeout"] = timeoutStr
+	session.Save(r, w)
+
+	checkAgentStatus(timeout)
+
 	// Отображаем страницу агентов с информацией из базы данных
 	tmpl := template.Must(template.New("agents").Parse(`
 			<!DOCTYPE html>
@@ -294,7 +348,7 @@ func agentsHandler(w http.ResponseWriter, r *http.Request) {
 						<form action="/agents" method="get">
 							<div class="form-group">
 								<label for="timeout">Таймаут (в секундах):</label>
-								<input type="number" class="form-control" id="timeout" name="timeout" value="10">
+								<input type="number" class="form-control" id="timeout" name="timeout" value="` + timeoutStr + `">
 							</div>
 							<button type="submit" class="btn btn-primary">Обновить таймаут</button>
 						</form>
@@ -326,20 +380,6 @@ func agentsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		log.Printf("Error executing template: %v", err)
 	}
-
-	timeoutStr := r.URL.Query().Get("timeout")
-	if timeoutStr == "" {
-		timeoutStr = "10" // Значение по умолчанию
-	}
-	timeout, err := strconv.Atoi(timeoutStr)
-	if err != nil {
-		log.Printf("Error parsing timeout value: %v", err)
-		http.Error(w, "Invalid timeout value", http.StatusBadRequest)
-		return
-	}
-
-	checkAgentStatus(timeout)
-
 }
 
 func getExpressions() ([]Expression, error) {
