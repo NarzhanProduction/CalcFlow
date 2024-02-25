@@ -3,8 +3,9 @@ Golang Project
 
 Всё работает топорно конечно...
 
-cначала скачаем sqlite если у вас его нет или go.mod барахлит:
-go get github.com/mattn/go-sqlite3
+cначала скачаем sqlite и sessions если у вас его нет или go.mod барахлит:
+go get github.com/mattn/go-sqlite3  
+go get github.com/gorilla/sessions
 
 В общем, запускаем orchest.go по типу: 
 go run backend/internal/orchestrator/orchest.go
