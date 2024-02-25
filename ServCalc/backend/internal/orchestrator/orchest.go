@@ -194,8 +194,7 @@ func calcHandler(w http.ResponseWriter, r *http.Request) {
 	session, _ := store.Get(r, "session-name")
 
 	// Получаем значения из POST-запроса
-	expression := r.FormValue("expression")
-	session.Values["expression"] = expression
+	session.Values["expression"] = expr
 	session.Values["addition"] = r.FormValue("addition")
 	session.Values["subtraction"] = r.FormValue("subtraction")
 	session.Values["multiplication"] = r.FormValue("multiplication")
@@ -312,23 +311,32 @@ func agentsHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error iterating over agent rows: %v", err)
 		return
 	}
+	session, _ := store.Get(r, "session-name")
 
-	timeoutStr := r.URL.Query().Get("timeout")
-	if timeoutStr == "" {
+	// Получаем текущее значение таймаута из сессии
+	timeoutStr := session.Values["timeout"]
+	if timeoutStr == nil {
 		timeoutStr = "10" // Значение по умолчанию
 	}
-	timeout, err := strconv.Atoi(timeoutStr)
+
+	// Проверяем, было ли передано новое значение таймаута через параметр запроса
+	if timeoutQuery := r.URL.Query().Get("timeout"); timeoutQuery != "" {
+		timeoutStr = timeoutQuery
+	}
+
+	// Сохраняем новое значение таймаута в сессии
+	session.Values["timeout"] = timeoutStr
+	session.Save(r, w)
+
+	// Переводим строку в интеджер
+	timeout, err := strconv.Atoi(timeoutStr.(string))
 	if err != nil {
 		log.Printf("Error parsing timeout value: %v", err)
 		http.Error(w, "Invalid timeout value", http.StatusBadRequest)
 		return
 	}
 
-	// Сохраняем значение таймаута в сессии
-	session, _ := store.Get(r, "session-name")
-	session.Values["timeout"] = timeoutStr
-	session.Save(r, w)
-
+	// Проверяем агентов
 	checkAgentStatus(timeout)
 
 	// Отображаем страницу агентов с информацией из базы данных
@@ -348,7 +356,7 @@ func agentsHandler(w http.ResponseWriter, r *http.Request) {
 						<form action="/agents" method="get">
 							<div class="form-group">
 								<label for="timeout">Таймаут (в секундах):</label>
-								<input type="number" class="form-control" id="timeout" name="timeout" value="` + timeoutStr + `">
+								<input type="number" class="form-control" id="timeout" name="timeout" value="` + timeoutStr.(string) + `">
 							</div>
 							<button type="submit" class="btn btn-primary">Обновить таймаут</button>
 						</form>
