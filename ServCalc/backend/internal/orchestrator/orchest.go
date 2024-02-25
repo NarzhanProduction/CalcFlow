@@ -96,28 +96,32 @@ func orchestrateHandler(w http.ResponseWriter, r *http.Request) {
     	<script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
 
 		<script>
-        document.getElementById("expressionForm").addEventListener("submit", function(event) {
-            event.preventDefault();
-            var formData = new FormData(this);
-            fetch("/calculate", {
-                method: "POST",
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    document.getElementById("result").innerText = data.error;
-                } else {
-                    document.getElementById("result").innerText = "Результат: " + data.result;
-                    var li = document.createElement("li");
-                    li.appendChild(document.createTextNode(formData.get("expression") + " = " + data.result));
-                    document.getElementById("expressionList").appendChild(li);
-                }
-            })
-            .catch(error => {
-                console.error("Ошибка:", error);
-            });
-        });
+		document.getElementById("expressionForm").addEventListener("submit", function(event) {
+			event.preventDefault();
+			var formData = new FormData(this);
+			fetch("/calculate", {
+				method: "POST",
+				body: formData
+			})
+			.then(response => response.json())
+			.then(data => {
+				if (data.error) {
+					document.getElementById("result").innerText = "Результат: " + data.error;
+					var li = document.createElement("li");
+					li.appendChild(document.createTextNode(formData.get("expression") + " = " + data.error));
+					document.getElementById("expressionList").appendChild(li);
+				} else {
+					document.getElementById("result").innerText = "Результат: " + data.result;
+					var li = document.createElement("li");
+					li.appendChild(document.createTextNode(formData.get("expression") + " = " + data.result));
+					document.getElementById("expressionList").appendChild(li);
+				}
+			})
+			.catch(error => {
+				console.error("Ошибка:", error);
+				document.getElementById("result").innerText = "Результат: " + error;
+			});
+		});		
     </script>
 	</body>
 	</html>
@@ -161,24 +165,39 @@ func calcHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid division speed", http.StatusBadRequest)
 		return
 	}
+	var notval bool
 
-	result, err := HandleCalculateRequest(expr, add, subt, multip, div, exp)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	// Проверяем выражение
+	if !isValidExpression(expr) {
+		http.Error(w, "Invalid expression", http.StatusBadRequest)
 		return
 	}
 
-	// Обертываем результат в JSON и отправляем клиенту
-	response := Result{Result: strconv.Itoa(result)}
-	jsonResponse, err := json.Marshal(response)
-	if err != nil {
-		http.Error(w, "Error encoding JSON", http.StatusInternalServerError)
+	// Если валидно, вычисляем
+	if !notval {
+		// вычисляем
+		result, err := HandleCalculateRequest(expr, add, subt, multip, div, exp)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Обертываем результат в JSON и отправляем клиенту
+		response := Result{Result: strconv.Itoa(result)}
+		jsonResponse, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "Error encoding JSON", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(jsonResponse)
+		// Ну если нет...
+	} else {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("expression is not valid"))
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write(jsonResponse)
 }
 
 func updateAgentStatus(agentID string, status string) error {
@@ -220,7 +239,6 @@ func pingHandler(w http.ResponseWriter, r *http.Request) {
 
 // Обработчик для отображения информации об агентах
 func agentsHandler(w http.ResponseWriter, r *http.Request) {
-	checkAgentStatus()
 	type AgentInfo struct {
 		ID         string
 		Status     string
@@ -273,6 +291,13 @@ func agentsHandler(w http.ResponseWriter, r *http.Request) {
 						<h1 class="display-4">Агенты</h1>
 						<p class="lead">Страница для просмотра информации об агентах.</p>
 						<hr class="my-4">
+						<form action="/agents" method="get">
+							<div class="form-group">
+								<label for="timeout">Таймаут (в секундах):</label>
+								<input type="number" class="form-control" id="timeout" name="timeout" value="10">
+							</div>
+							<button type="submit" class="btn btn-primary">Обновить таймаут</button>
+						</form>
 						<table class="table">
 							<thead>
 								<tr>
@@ -301,6 +326,20 @@ func agentsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		log.Printf("Error executing template: %v", err)
 	}
+
+	timeoutStr := r.URL.Query().Get("timeout")
+	if timeoutStr == "" {
+		timeoutStr = "10" // Значение по умолчанию
+	}
+	timeout, err := strconv.Atoi(timeoutStr)
+	if err != nil {
+		log.Printf("Error parsing timeout value: %v", err)
+		http.Error(w, "Invalid timeout value", http.StatusBadRequest)
+		return
+	}
+
+	checkAgentStatus(timeout)
+
 }
 
 func getExpressions() ([]Expression, error) {
@@ -343,11 +382,6 @@ func getExpressions() ([]Expression, error) {
 }
 
 func HandleCalculateRequest(expression string, op1, op2, op3, op4, op5 int) (int, error) {
-	// Проверяем выражение
-	if !isValidExpression(expression) {
-		return 0, fmt.Errorf("invalid expression")
-	}
-
 	// Записываем выражение в базу данных
 	expressionID, isInSQL, err := saveExpression(expression)
 	if err != nil {
@@ -532,7 +566,7 @@ func isValidExpression(expression string) bool {
 	return match
 }
 
-func checkAgentStatus() {
+func checkAgentStatus(timeout int) {
 	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
 	if err != nil {
 		log.Fatal("Error opening database:", err)
@@ -542,11 +576,12 @@ func checkAgentStatus() {
 	// Получаем текущее время
 	currentTime := time.Now()
 	var agentID string
+	var status string
 	var lastPing time.Time
 	var timeouttrue bool
 
 	// Выбираем всех агентов из базы данных
-	rows, err := db.Query("SELECT id, last_ping FROM agents")
+	rows, err := db.Query("SELECT id, status, last_ping FROM agents")
 	if err != nil {
 		log.Printf("Error querying agents: %v", err)
 		return
@@ -555,14 +590,14 @@ func checkAgentStatus() {
 
 	// Проверяем время последнего пинга каждого агента
 	for rows.Next() {
-		if err := rows.Scan(&agentID, &lastPing); err != nil {
+		if err := rows.Scan(&agentID, &status, &lastPing); err != nil {
 			log.Printf("Error scanning agent row: %v", err)
 			continue
 		}
-		timeout := 10 * time.Second
+		timeo := time.Duration(timeout) * time.Second
 
 		// Если время последнего пинга превышает таймаут, помечаем агента как мертвого
-		if currentTime.Sub(lastPing) > timeout {
+		if currentTime.Sub(lastPing) > timeo && status != "dead" {
 			timeouttrue = true
 		}
 	}
