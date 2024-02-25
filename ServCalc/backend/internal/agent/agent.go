@@ -1,10 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"strconv"
@@ -17,42 +16,31 @@ type Result struct {
 }
 
 func main() {
+	orchestratorURL := "http://localhost:8080"
+
+	// ID агента
+	agentID := "1"
 
 	http.HandleFunc("/", HandleExpression)
-	go func() {
-		for {
-			fmt.Println("connected")
-			time.Sleep(1 * time.Minute)
-		}
-	}()
+	// Функция для отправки пинга оркестратору
+	go sendPing(orchestratorURL, agentID)
 	http.ListenAndServe(":8081", nil)
 }
 
-func sendPing() error {
-	// Формируем JSON с данными пинга
-	pingData := struct {
-		AgentID int `json:"agent_id"`
-	}{
-		AgentID: 1, // Замените на реальный идентификатор агента
-	}
-	requestBody, err := json.Marshal(pingData)
-	if err != nil {
-		return err
-	}
+func sendPing(orchestratorURL string, agentID string) {
+	for {
+		// Отправляем GET запрос на оркестратор для отправки пинга
+		resp, err := http.Get(orchestratorURL + "/ping?id=" + agentID)
+		if err != nil {
+			log.Printf("Error sending ping: %v", err)
+		} else {
+			log.Printf("Ping sent to orchestrator")
+			resp.Body.Close()
+		}
 
-	// Отправляем POST-запрос оркестратору
-	resp, err := http.Post("http://localhost:8080", "application/json", bytes.NewBuffer(requestBody))
-	if err != nil {
-		return err
+		// Ждем некоторое время перед отправкой следующего пинга
+		time.Sleep(5 * time.Second)
 	}
-	defer resp.Body.Close()
-
-	// Проверяем статус ответа
-	if resp.StatusCode != http.StatusOK {
-		return errors.New("unexpected status code")
-	}
-
-	return nil
 }
 
 var available bool
