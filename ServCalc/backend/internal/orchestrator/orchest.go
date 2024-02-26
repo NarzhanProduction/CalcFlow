@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"text/template"
 	"time"
 
@@ -127,24 +128,29 @@ func orchestrateHandler(w http.ResponseWriter, r *http.Request) {
 				method: "POST",
 				body: formData
 			})
-			.then(response => response.json())
+			.then(response => {
+				// Клонируем ответ
+				const clone = response.clone();
+			
+				// Пытаемся распарсить исходный ответ как JSON
+				return response.json()
+				.catch(() => {
+					// Если не удается, возвращаем клонированный ответ как текст
+					return clone.text();
+				});
+			})
 			.then(data => {
-				if (data.error) {
-					document.getElementById("result").innerText = "Результат: " + data.error;
-					var li = document.createElement("li");
-					li.appendChild(document.createTextNode(formData.get("expression") + " = " + data.error));
-					document.getElementById("expressionList").appendChild(li);
-				} else {
+				// Обрабатываем данные и выводим результат
+				if (typeof data === 'object') {
 					document.getElementById("result").innerText = "Результат: " + data.result;
-					var li = document.createElement("li");
-					li.appendChild(document.createTextNode(formData.get("expression") + " = " + data.result));
-					document.getElementById("expressionList").appendChild(li);
+				} else {
+					document.getElementById("result").innerText = "Результат: " + data;
 				}
 			})
 			.catch(error => {
 				console.error("Ошибка:", error);
 				document.getElementById("result").innerText = "Результат: " + error;
-			});
+			});					
 		});		
     </script>
 	</body>
@@ -227,10 +233,12 @@ func calcHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write(jsonResponse)
-		// Ну если нет...
 	} else {
+		// Ну если нет...
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("expression is not valid"))
+		errorMessage := map[string]string{"error": "Invalid expression"}
+		json.NewEncoder(w).Encode(errorMessage)
 		return
 	}
 }
@@ -602,16 +610,35 @@ func updateExpressionResult(expressionID int, result int) error {
 }
 
 func isValidExpression(expression string) bool {
-	regex := `^[\d\+\-\*\/\(\)\^]+$`
-
-	// Проверяем выражение с помощью регулярного выражения
-	match, err := regexp.MatchString(regex, expression)
-	if err != nil {
-		log.Println("Error checking expression validity:", err)
+	// Проверяем наличие неизвестных символов
+	unknownSymbols := regexp.MustCompile(`[^0-9()+\-*/^.]`).FindAllString(expression, -1)
+	if len(unknownSymbols) > 0 {
+		fmt.Println("Выражение содержит неизвестные символы:", unknownSymbols)
 		return false
 	}
 
-	return match
+	// Проверяем количество открывающих и закрывающих скобок
+	if strings.Count(expression, "(") != strings.Count(expression, ")") {
+		fmt.Println("Неправильное количество скобок")
+		return false
+	}
+
+	// Проверяем валидность выражения с помощью регулярного выражения
+	pattern := `-?\d+(\.\d+)?`
+	numbers := regexp.MustCompile(pattern).FindAllString(expression, -1)
+	for _, num := range numbers {
+		matched, err := regexp.MatchString("^"+pattern+"$", num)
+		if err != nil {
+			fmt.Println("Ошибка при выполнении регулярного выражения:", err)
+			return false
+		}
+		if !matched {
+			fmt.Println("Число", num, "невалидно")
+			return false
+		}
+	}
+
+	return true
 }
 
 func checkAgentStatus(timeout int) {
