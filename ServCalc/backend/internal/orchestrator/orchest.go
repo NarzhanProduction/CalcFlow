@@ -22,6 +22,12 @@ var (
 	store = sessions.NewCookieStore([]byte("secret-key"))
 )
 
+var op1Int int
+var op2Int int
+var op3Int int
+var op4Int int
+var op5Int int
+
 type Result struct {
 	Result string `json:"result"`
 }
@@ -57,6 +63,29 @@ func orchestrateHandler(w http.ResponseWriter, r *http.Request) {
 	multiplication := getOrDefault(session.Values["multiplication"], "200")
 	division := getOrDefault(session.Values["division"], "200")
 	exponent := getOrDefault(session.Values["exponent"], "200")
+
+	// Преобразование строковых значений в целые числа
+	var err error
+	op1Int, err = strconv.Atoi(addition)
+	if err != nil {
+		log.Printf("the session value(addition) is not int: %v\n", err)
+	}
+	op2Int, err = strconv.Atoi(subtraction)
+	if err != nil {
+		log.Printf("the session value(addition) is not int: %v\n", err)
+	}
+	op3Int, err = strconv.Atoi(multiplication)
+	if err != nil {
+		log.Printf("the session value(addition) is not int: %v\n", err)
+	}
+	op4Int, err = strconv.Atoi(division)
+	if err != nil {
+		log.Printf("the session value(addition) is not int: %v\n", err)
+	}
+	op5Int, err = strconv.Atoi(exponent)
+	if err != nil {
+		log.Printf("the session value(addition) is not int: %v\n", err)
+	}
 
 	expressions, err := getExpressions()
 	if err != nil {
@@ -156,7 +185,7 @@ func orchestrateHandler(w http.ResponseWriter, r *http.Request) {
 	</body>
 	</html>
 	`
-	fmt.Fprintf(w, html)
+	fmt.Fprint(w, html)
 }
 
 // Обработчик для вычисления выражения
@@ -276,8 +305,83 @@ func pingHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Received ping from agent %s", agentID)
 
+	err := checkFreeExpressions()
+	if err != nil {
+		log.Fatal(err)
+	}
 	// Перенаправляем на страницу агентов
 	http.Redirect(w, r, "/agents", http.StatusFound)
+}
+
+func checkFreeExpressions() error {
+	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
+	if err != nil {
+		log.Fatal("Error opening database:", err)
+	}
+
+	// Проверяем, нет ли уже результата в базе данных
+	rows, err := db.Query("SELECT expression, status FROM expressions")
+	if err != nil {
+		return err
+	}
+
+	var express, status string
+	for rows.Next() {
+
+		if err := rows.Scan(&express, &status); err != nil {
+			return err
+		}
+
+		if status == "pending" {
+			break
+		}
+	}
+	db.Close()
+	rows.Close()
+
+	result, err := HandleCalculateRequest(express, op1Int, op2Int, op3Int, op4Int, op5Int)
+	if err != nil {
+		log.Printf("Error while evaluate: %v", err)
+	}
+
+	log.Printf("Pending expression was succesfully evaluated: %d", result)
+	return nil
+}
+
+func CheckAgentsAvailability(expr string) (bool, error) {
+	// открываем базу данны
+	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
+	if err != nil {
+		log.Fatal("Ошибка открытия базы данных:", err)
+	}
+
+	defer db.Close()
+
+	var id int
+	var status string
+
+	// Выбираем информацию об агентах из базы данных
+	rows, err := db.Query("SELECT id, status FROM agents")
+	if err != nil {
+		log.Printf("Error querying agents: %v", err)
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		if err := rows.Scan(&id, &status); err != nil {
+			log.Printf("Error scanning agent row: %v", err)
+			return false, err
+		}
+		if status == "alive" {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("Error iterating over agent rows: %v", err)
+		return false, err
+	}
+	return false, nil
 }
 
 // Обработчик для отображения информации об агентах
@@ -292,7 +396,6 @@ func agentsHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Fatal("Ошибка открытия базы данных:", err)
 	}
-
 	defer db.Close()
 
 	// Выбираем информацию об агентах из базы данных
@@ -439,11 +542,11 @@ func getExpressions() ([]Expression, error) {
 
 func HandleCalculateRequest(expression string, op1, op2, op3, op4, op5 int) (int, error) {
 	// Записываем выражение в базу данных
-	expressionID, isInSQL, err := saveExpression(expression)
+	expressionID, isInSQL, isResultNoExist, err := saveExpression(expression)
 	if err != nil {
 		return 0, err
 	}
-	if isInSQL {
+	if isInSQL && !isResultNoExist {
 		resultReady, err := getOneExpression(expression, expressionID)
 		if err != nil {
 			return 0, err
@@ -453,13 +556,13 @@ func HandleCalculateRequest(expression string, op1, op2, op3, op4, op5 int) (int
 	}
 
 	// Отправляем выражение агенту для вычисления
-	result, err := computeExpression(expression)
+	result, err := computeExpression(expression, expressionID)
 	if err != nil {
 		return 0, err
 	}
 
 	// Обновляем результат вычисления в базе данных
-	err = updateExpressionResult(expressionID, result)
+	err = updateExpressionResult(expressionID, result, "success")
 	if err != nil {
 		return 0, err
 	}
@@ -519,7 +622,7 @@ func getOneExpression(expr string, exprID int) (int, error) {
 	return 0, nil
 }
 
-func saveExpression(expression string) (int, bool, error) {
+func saveExpression(expression string) (int, bool, bool, error) {
 	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
 	if err != nil {
 		log.Fatal("Error opening database:", err)
@@ -528,7 +631,7 @@ func saveExpression(expression string) (int, bool, error) {
 	// Проверяем, нет ли уже результата в базе данных
 	rows, err := db.Query("SELECT id, expression, result, status FROM expressions WHERE expression = ?", expression)
 	if err != nil {
-		return 0, false, fmt.Errorf("database error: %v", err)
+		return 0, false, false, fmt.Errorf("database error: %v", err)
 	}
 	defer rows.Close()
 
@@ -538,27 +641,29 @@ func saveExpression(expression string) (int, bool, error) {
 		var result sql.NullInt64
 
 		if err := rows.Scan(&id, &express, &result, &status); err != nil {
-			return 0, false, fmt.Errorf("error scanning row: %v ", err)
+			return 0, false, false, fmt.Errorf("error scanning row: %v ", err)
 		}
 
 		if status == "success" && express == expression {
-			return id, true, nil
+			return id, true, false, nil
+		} else if status == "pending" && express == expression {
+			return id, true, true, nil
 		}
 	}
 
 	// Пишем выражение в базу данных и возвращаем его ID
 	res, err := db.Exec("INSERT INTO expressions (expression, status) VALUES (?, ?)", expression, "pending")
 	if err != nil {
-		return 0, false, err
+		return 0, false, false, err
 	}
 	expressionID, err := res.LastInsertId()
 	if err != nil {
-		return 0, false, err
+		return 0, false, false, err
 	}
-	return int(expressionID), false, nil
+	return int(expressionID), false, true, nil
 }
 
-func computeExpression(expression string) (int, error) {
+func computeExpression(expression string, id int) (int, error) {
 	// Формируем POST-запрос агенту для вычисления выражения
 	requestData := map[string]string{"expression": expression}
 	requestBody, err := json.Marshal(requestData)
@@ -572,6 +677,11 @@ func computeExpression(expression string) (int, error) {
 		return 0, fmt.Errorf("ошибка отправки POST-запроса агенту: %v", err)
 	}
 	defer resp.Body.Close()
+
+	err = updateExpressionResult(id, 0, "processing")
+	if err != nil {
+		return 0, fmt.Errorf("ошибка обновления базы данных: %v", err)
+	}
 
 	// Проверяем статус ответа
 	fmt.Println("Response status:", resp.Status)
@@ -598,14 +708,14 @@ func computeExpression(expression string) (int, error) {
 	return result, nil
 }
 
-func updateExpressionResult(expressionID int, result int) error {
+func updateExpressionResult(expressionID int, result int, status string) error {
 	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
 	if err != nil {
 		log.Fatal("Error opening database:", err)
 	}
 	defer db.Close()
 	// Обновляем результат вычисления в базе данных
-	_, err = db.Exec("UPDATE expressions SET result=?, status=? WHERE id=?", result, "success", expressionID)
+	_, err = db.Exec("UPDATE expressions SET result=?, status=? WHERE id=?", result, status, expressionID)
 	return err
 }
 
