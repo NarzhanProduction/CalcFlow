@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/sessions"
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -39,6 +41,11 @@ type Expression struct {
 	Status     string
 }
 
+type User struct {
+	Name     string `json:"login"`
+	Password string `json:"password"`
+}
+
 func getOrDefault(value interface{}, defaultValue string) string {
 	if value != nil {
 		if str, ok := value.(string); ok {
@@ -46,6 +53,272 @@ func getOrDefault(value interface{}, defaultValue string) string {
 		}
 	}
 	return defaultValue
+}
+
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	loginHTML := `<!DOCTYPE html>
+	<html lang="en">
+	<head>
+		<meta charset="UTF-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<title>Вход</title>
+		<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+	</head>
+	<body>
+		<div class="container">
+			<div class="row justify-content-center mt-5">
+				<div class="col-md-6">
+					<h1 class="text-center mb-4">Вход</h1>
+					<form id="loginForm" action="/loginCheck" method="POST">
+						<div class="form-group">
+							<label for="login">Логин:</label>
+							<input type="text" class="form-control" id="login" name="login" required>
+						</div>
+						<div class="form-group">
+							<label for="password">Пароль:</label>
+							<input type="password" class="form-control" id="password" name="password" required>
+						</div>
+						<button type="submit" class="btn btn-primary btn-block">Войти</button>
+					</form>
+					<div id="message" class="text-center mt-3"></div>
+					<div class="text-center mt-3">
+						<a href="/" class="btn btn-secondary">Назад</a>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+		<script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.4/dist/umd/popper.min.js"></script>
+		<script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+	
+		<script>
+		document.getElementById("loginForm").addEventListener("submit", function(event) {
+			event.preventDefault();
+			var formData = new FormData(this);
+			fetch("/loginCheck", {
+				method: "POST",
+				body: formData
+			})
+			.then(response => response.json())
+			.then(data => {
+				if (data.token) {
+					document.getElementById("message").innerHTML = '<div class="alert alert-success" role="alert">Успешный вход! Токен: ' + data.token + '</div>';
+				} else {
+					document.getElementById("message").innerHTML = '<div class="alert alert-danger" role="alert">Ошибка входа: ' + data.error + '</div>';
+				}
+			})
+			.catch(error => {
+				console.error("Ошибка:", error);
+				document.getElementById("message").innerHTML = '<div class="alert alert-danger" role="alert">Произошла ошибка при входе: ' + error + '</div>';
+			});                    
+		});		
+		</script>
+	</body>
+	</html>`
+
+	fmt.Fprint(w, loginHTML)
+}
+
+func loginCheckHandler(w http.ResponseWriter, r *http.Request) {
+	// Получаем данные из формы
+	login := r.FormValue("login")
+	password := r.FormValue("password")
+
+	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
+	if err != nil {
+		log.Fatal("Error opening database:", err)
+	}
+	defer db.Close()
+
+	// Получаем хеш пароля из базы данных
+	var passwordHash string
+	err = db.QueryRow("SELECT password FROM Users WHERE Name = ?", login).Scan(&passwordHash)
+	if err != nil {
+		errorMessage := map[string]string{"error": "Неправильный логин! Может, попробуйте зарегистрироваться?"}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(errorMessage)
+		return
+	}
+
+	// Проверяем совпадение паролей
+	if password != passwordHash {
+		errorMessage := map[string]string{"error": "Неправильный пароль!"}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(errorMessage)
+		return
+	}
+
+	// Получаем куку с именем "token" из запроса
+	cookie, err1 := r.Cookie("token")
+	if cookie.Value != "" {
+		user, err := getCookieToken(r)
+		if err != nil {
+			log.Printf("error of %v", err)
+		}
+		if err1 == nil && login == user {
+			// Отправляем сообщение об ошибке, если токен уже установлен
+			errorMessage := map[string]string{"error": "Вы уже в системе!"}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(errorMessage)
+			return
+		}
+	}
+
+	// Генерируем JWT токен
+	now := time.Now()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"name": login,
+		"nbf":  now.Unix(),
+		"exp":  now.Add(5 * time.Minute).Unix(),
+		"iat":  now.Unix(),
+	})
+
+	tokenString, err := token.SignedString([]byte(login))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Формируем ответ с токеном в формате JSON
+	response := map[string]string{"token": tokenString}
+
+	// Устанавливаем токен в куки
+	http.SetCookie(w, &http.Cookie{
+		Name:     "token",
+		Value:    tokenString,
+		HttpOnly: true, // Чтобы кука была доступна только для HTTP запросов, а не JavaScript
+	})
+
+	// Устанавливаем заголовок Content-Type и отправляем ответ
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+func registHandler(w http.ResponseWriter, r *http.Request) {
+	registerHTML := `<!DOCTYPE html>
+	<html lang="en">
+	<head>
+		<meta charset="UTF-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<title>Регистрация</title>
+		<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+	</head>
+	<body>
+		<div class="container">
+			<div class="row justify-content-center mt-5">
+				<div class="col-md-6">
+					<h1 class="text-center mb-4">Регистрация</h1>
+					<form id="registerForm" action="/registerCheck" method="POST">
+						<div class="form-group">
+							<label for="login">Логин:</label>
+							<input type="text" class="form-control" id="login" name="login" required>
+						</div>
+						<div class="form-group">
+							<label for="password">Пароль:</label>
+							<input type="password" class="form-control" id="password" name="password" required>
+						</div>
+						<button type="submit" class="btn btn-primary btn-block">Зарегистрироваться</button>
+					</form>
+					<div id="message" class="text-center mt-3"></div>
+					<div class="text-center mt-3">
+						<a href="/" class="btn btn-secondary">Назад</a>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+		<script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.4/dist/umd/popper.min.js"></script>
+		<script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+	
+		<script>
+		document.getElementById("registerForm").addEventListener("submit", function(event) {
+			event.preventDefault();
+			var formData = new FormData(this);
+			fetch("/registerCheck", {
+				method: "POST",
+				body: formData
+			})
+			.then(response => response.json())
+			.then(data => {
+				if (data.token) {
+					document.getElementById("message").innerHTML = '<div class="alert alert-success" role="alert">Успешная регистрация!</div>';
+				} else {
+					document.getElementById("message").innerHTML = '<div class="alert alert-danger" role="alert">Ошибка регистрации: ' + data.error + '</div>';
+				}
+			})
+			.catch(error => {
+				console.error("Ошибка:", error);
+				document.getElementById("message").innerHTML = '<div class="alert alert-danger" role="alert">Произошла ошибка при регистрации: ' + error + '</div>';
+			});                    
+		});		
+		</script>
+	</body>
+	</html>`
+
+	fmt.Fprint(w, registerHTML)
+}
+func registerCheckHandler(w http.ResponseWriter, r *http.Request) {
+	// Получаем данные из формы
+	login := r.FormValue("login")
+	password := r.FormValue("password")
+
+	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
+	if err != nil {
+		log.Fatal("Error opening database:", err)
+	}
+	defer db.Close()
+
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM Users WHERE Name = ?", login).Scan(&count)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if count > 0 {
+		http.Error(w, "User already exists", http.StatusBadRequest)
+		return
+	}
+
+	// Вставляем нового пользователя в базу данных
+	_, err = db.Exec("INSERT INTO Users (Name, password) VALUES (?, ?)", login, password)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Генерируем JWT токен
+	now := time.Now()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"name": login,
+		"nbf":  now.Unix(),
+		"exp":  now.Add(5 * time.Minute).Unix(),
+		"iat":  now.Unix(),
+	})
+
+	tokenString, err := token.SignedString([]byte(login))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Формируем ответ с токеном в формате JSON
+	response := map[string]string{"token": tokenString}
+
+	// Устанавливаем токен в куки
+	http.SetCookie(w, &http.Cookie{
+		Name:     "token",
+		Value:    tokenString,
+		HttpOnly: true, // Чтобы кука была доступна только для HTTP запросов, а не JavaScript
+	})
+
+	// Устанавливаем заголовок Content-Type и отправляем ответ
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }
 
 func orchestrateHandler(w http.ResponseWriter, r *http.Request) {
@@ -87,10 +360,16 @@ func orchestrateHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("the session value(addition) is not int: %v\n", err)
 	}
 
-	expressions, err := getExpressions()
+	// Получаем куку с именем "token" из запроса
+	user, err := getCookieToken(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		// Обработка ошибки, если кука не найдена или не может быть прочитана
+		log.Print(err.Error())
+	}
+
+	expressions, err := getExpressions(user)
+	if err != nil {
+		log.Printf("вы не авторизованы")
 	}
 
 	html := `<!DOCTYPE html>
@@ -103,6 +382,8 @@ func orchestrateHandler(w http.ResponseWriter, r *http.Request) {
 		<div class="container mt-5">
         	<div class="jumbotron">
             	<a class="btn btn-primary btn-lg" href="/agents" role="button">Агенты</a>
+            	<a class="btn btn-primary btn-lg" href="/register" role="button">Регистрация</a>
+            	<a class="btn btn-primary btn-lg" href="/login" role="button">Логин</a>
             	<h1 class="display-4">Арифметический калькулятор</h1>
             	<hr class="my-4">
         	</div>
@@ -138,8 +419,12 @@ func orchestrateHandler(w http.ResponseWriter, r *http.Request) {
 			<h2>Выполненные выражения:</h2>
 			<ul class="list-group" id="expressionList">
 	`
-	for _, expr := range expressions {
-		html += fmt.Sprintf("<li>%s = %d</li>", expr.Expression, expr.Result)
+	if expressions != nil {
+		for _, expr := range expressions {
+			html += fmt.Sprintf("<li>%s = %d</li>", expr.Expression, expr.Result)
+		}
+	} else {
+		html += `<h2>Вы не в системе или у вас ещё нет выражений!</h2>`
 	}
 	html += `
         	</ul>
@@ -171,14 +456,14 @@ func orchestrateHandler(w http.ResponseWriter, r *http.Request) {
 			.then(data => {
 				// Обрабатываем данные и выводим результат
 				if (typeof data === 'object') {
-					document.getElementById("result").innerText = "Результат: " + data.result;
+					document.getElementById("result").innerHTML = '<div class="alert alert-success" role="alert">Результат: ' + data.result + '</div>';
 				} else {
-					document.getElementById("result").innerText = "Результат: " + data;
+					document.getElementById("result").innerHTML = '<div class="alert alert-danger" role="alert">Ошибка: ' + data + '</div>';
 				}
 			})
 			.catch(error => {
 				console.error("Ошибка:", error);
-				document.getElementById("result").innerText = "Результат: " + error;
+				document.getElementById("result").innerHTML = '<div class="alert alert-danger" role="alert">Ошибка: ' + error + '</div>';
 			});					
 		});		
     </script>
@@ -186,6 +471,34 @@ func orchestrateHandler(w http.ResponseWriter, r *http.Request) {
 	</html>
 	`
 	fmt.Fprint(w, html)
+}
+
+func getCookieToken(r *http.Request) (string, error) {
+	// Получаем куку с именем "token" из запроса
+	cookie, err := r.Cookie("token")
+	if err != nil {
+		// Обработка ошибки, если кука не найдена или не может быть прочитана
+		return "", errors.New("токен авторизации не найден")
+	}
+
+	// Извлекаем значение токена из куки
+	tokenString := cookie.Value
+
+	// Парсим и проверяем токен
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		// // Извлекаем имя пользователя из токена
+		user := token.Claims.(jwt.MapClaims)["name"].(string)
+		// // Используем логин пользователя для создания ключа
+		return []byte(user), nil
+	})
+	if err != nil && !token.Valid {
+		// Если произошла ошибка при декодировании токена или токен невалиден
+		return "", errors.New("невалидный токен")
+	}
+
+	// Теперь вы можете использовать имя пользователя, например, для аутентификации или других действий
+	user := token.Claims.(jwt.MapClaims)["name"].(string)
+	return user, nil
 }
 
 // Обработчик для вычисления выражения
@@ -196,32 +509,32 @@ func calcHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	expr := r.FormValue("expression")
 	if expr == "" {
-		http.Error(w, "Expression is required", http.StatusBadRequest)
+		http.Error(w, "Требуется выражение", http.StatusBadRequest)
 		return
 	}
 	add, err := strconv.Atoi(r.FormValue("addition"))
 	if err != nil {
-		http.Error(w, "Invalid addition speed", http.StatusBadRequest)
+		http.Error(w, "Невалидная скорость сложения", http.StatusBadRequest)
 		return
 	}
 	subt, err := strconv.Atoi(r.FormValue("subtraction"))
 	if err != nil {
-		http.Error(w, "Invalid subtraction speed", http.StatusBadRequest)
+		http.Error(w, "Невалидная скорость вычитания", http.StatusBadRequest)
 		return
 	}
 	multip, err := strconv.Atoi(r.FormValue("multiplication"))
 	if err != nil {
-		http.Error(w, "Invalid multiplication speed", http.StatusBadRequest)
+		http.Error(w, "Невалидная скорость умножения", http.StatusBadRequest)
 		return
 	}
 	div, err := strconv.Atoi(r.FormValue("division"))
 	if err != nil {
-		http.Error(w, "Invalid division speed", http.StatusBadRequest)
+		http.Error(w, "Невалидная скорость деления", http.StatusBadRequest)
 		return
 	}
 	exp, err := strconv.Atoi(r.FormValue("exponent"))
 	if err != nil {
-		http.Error(w, "Invalid division speed", http.StatusBadRequest)
+		http.Error(w, "Невалидная скорость степени", http.StatusBadRequest)
 		return
 	}
 	var notval bool
@@ -237,16 +550,43 @@ func calcHandler(w http.ResponseWriter, r *http.Request) {
 	session.Values["exponent"] = r.FormValue("exponent")
 	session.Save(r, w)
 
+	// Получаем куку с именем "token" из запроса
+	cookie, err := r.Cookie("token")
+	if err != nil {
+		// Обработка ошибки, если кука не найдена или не может быть прочитана
+		http.Error(w, "Токен авторизации не найден", http.StatusUnauthorized)
+		return
+	}
+
+	// Извлекаем значение токена из куки
+	tokenString := cookie.Value
+
+	// Парсим и проверяем токен
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		// Извлекаем имя пользователя из токена
+		user := token.Claims.(jwt.MapClaims)["name"].(string)
+		// Используем логин пользователя для создания ключа
+		return []byte(user), nil
+	})
+	if err != nil || !token.Valid {
+		// Если произошла ошибка при декодировании токена или токен невалиден
+		http.Error(w, "Невалидный токен", http.StatusUnauthorized)
+		return
+	}
+
+	// Теперь вы можете использовать имя пользователя, например, для аутентификации или других действий
+	user := token.Claims.(jwt.MapClaims)["name"].(string)
+
 	// Проверяем выражение
 	if !isValidExpression(expr) {
-		http.Error(w, "Invalid expression", http.StatusBadRequest)
+		http.Error(w, "Невалидное выражение", http.StatusBadRequest)
 		return
 	}
 
 	// Если валидно, вычисляем
 	if !notval {
 		// вычисляем
-		result, err := HandleCalculateRequest(expr, add, subt, multip, div, exp)
+		result, err := HandleCalculateRequest(expr, user, add, subt, multip, div, exp)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -266,7 +606,7 @@ func calcHandler(w http.ResponseWriter, r *http.Request) {
 		// Ну если нет...
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		errorMessage := map[string]string{"error": "Invalid expression"}
+		errorMessage := map[string]string{"error": "Невалидное выражение"}
 		json.NewEncoder(w).Encode(errorMessage)
 		return
 	}
@@ -305,7 +645,34 @@ func pingHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Received ping from agent %s", agentID)
 
-	err := checkFreeExpressions()
+	// Получаем куку с именем "token" из запроса
+	cookie, err := r.Cookie("token")
+	if err != nil {
+		// Обработка ошибки, если кука не найдена или не может быть прочитана
+		http.Error(w, "Токен авторизации не найден", http.StatusUnauthorized)
+		return
+	}
+
+	// Извлекаем значение токена из куки
+	tokenString := cookie.Value
+
+	// Парсим и проверяем токен
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		// Извлекаем имя пользователя из токена
+		user := token.Claims.(jwt.MapClaims)["name"].(string)
+		// Используем логин пользователя для создания ключа
+		return []byte(user), nil
+	})
+	if err != nil || !token.Valid {
+		// Если произошла ошибка при декодировании токена или токен невалиден
+		http.Error(w, "Невалидный токен", http.StatusUnauthorized)
+		return
+	}
+
+	// Теперь вы можете использовать имя пользователя, например, для аутентификации или других действий
+	user := token.Claims.(jwt.MapClaims)["name"].(string)
+
+	err = checkFreeExpressions(user)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -313,7 +680,7 @@ func pingHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/agents", http.StatusFound)
 }
 
-func checkFreeExpressions() error {
+func checkFreeExpressions(user string) error {
 	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
 	if err != nil {
 		log.Fatal("Error opening database:", err)
@@ -339,12 +706,11 @@ func checkFreeExpressions() error {
 	db.Close()
 	rows.Close()
 
-	result, err := HandleCalculateRequest(express, op1Int, op2Int, op3Int, op4Int, op5Int)
+	_, err = HandleCalculateRequest(express, user, op1Int, op2Int, op3Int, op4Int, op5Int)
 	if err != nil {
 		log.Printf("Error while evaluate: %v", err)
 	}
 
-	log.Printf("Pending expression was succesfully evaluated: %d", result)
 	return nil
 }
 
@@ -501,14 +867,14 @@ func agentsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func getExpressions() ([]Expression, error) {
+func getExpressions(user string) ([]Expression, error) {
 	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
 	if err != nil {
 		log.Fatal("Ошибка открытия базы данных:", err)
 	}
 
 	defer db.Close()
-	rows, err := db.Query("SELECT id, expression, result, status FROM expressions")
+	rows, err := db.Query("SELECT id, expression, result, status FROM expressions WHERE user = $1", user)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка выбора таблицы из базы данных: %v", err)
 	}
@@ -523,7 +889,6 @@ func getExpressions() ([]Expression, error) {
 		}
 
 		// Если значение Result пустое, заменяем его на 0
-
 		if result.Valid {
 			exp.Result = int(result.Int64)
 		} else if !result.Valid {
@@ -540,9 +905,9 @@ func getExpressions() ([]Expression, error) {
 	return expressions, nil
 }
 
-func HandleCalculateRequest(expression string, op1, op2, op3, op4, op5 int) (int, error) {
+func HandleCalculateRequest(expression, user string, op1, op2, op3, op4, op5 int) (int, error) {
 	// Записываем выражение в базу данных
-	expressionID, isInSQL, isResultNoExist, err := saveExpression(expression)
+	expressionID, isInSQL, isResultNoExist, err := saveExpression(expression, user)
 	if err != nil {
 		return 0, err
 	}
@@ -622,14 +987,14 @@ func getOneExpression(expr string, exprID int) (int, error) {
 	return 0, nil
 }
 
-func saveExpression(expression string) (int, bool, bool, error) {
+func saveExpression(expression, user string) (int, bool, bool, error) {
 	db, err := sql.Open("sqlite3", "./backend/pkg/sql/expressions.db")
 	if err != nil {
 		log.Fatal("Error opening database:", err)
 	}
 	defer db.Close()
 	// Проверяем, нет ли уже результата в базе данных
-	rows, err := db.Query("SELECT id, expression, result, status FROM expressions WHERE expression = ?", expression)
+	rows, err := db.Query("SELECT id, expression, result, status FROM expressions WHERE expression = ? AND user = ?", expression, user)
 	if err != nil {
 		return 0, false, false, fmt.Errorf("database error: %v", err)
 	}
@@ -652,7 +1017,7 @@ func saveExpression(expression string) (int, bool, bool, error) {
 	}
 
 	// Пишем выражение в базу данных и возвращаем его ID
-	res, err := db.Exec("INSERT INTO expressions (expression, status) VALUES (?, ?)", expression, "pending")
+	res, err := db.Exec("INSERT INTO expressions (expression, status, user) VALUES (?, ?, ?)", expression, "pending", user)
 	if err != nil {
 		return 0, false, false, err
 	}
@@ -714,6 +1079,7 @@ func updateExpressionResult(expressionID int, result int, status string) error {
 		log.Fatal("Error opening database:", err)
 	}
 	defer db.Close()
+
 	// Обновляем результат вычисления в базе данных
 	_, err = db.Exec("UPDATE expressions SET result=?, status=? WHERE id=?", result, status, expressionID)
 	return err
@@ -803,17 +1169,27 @@ func main() {
 	defer db.Close()
 
 	// Создаем таблицу для хранения выражений
-	_, err = db.Exec("CREATE TABLE IF NOT EXISTS expressions (id INTEGER PRIMARY KEY AUTOINCREMENT, expression TEXT, result INTEGER, status TEXT)")
+	_, err = db.Exec("CREATE TABLE IF NOT EXISTS expressions (id INTEGER PRIMARY KEY AUTOINCREMENT, expression TEXT, result INTEGER, status TEXT, user TEXT);")
 	if err != nil {
 		log.Fatal("Error creating table:", err)
 	}
 
-	_, err = db.Exec("CREATE TABLE IF NOT EXISTS agents (id INTEGER PRIMARY KEY AUTOINCREMENT, hostname TEXT NOT NULL, port TEXT NOT NULL, last_ping TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+	// Создаем таблицу для хранения пользователей
+	_, err = db.Exec("CREATE TABLE IF NOT EXISTS Users (id INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT, password TEXT);")
+	if err != nil {
+		log.Fatal("Error creating table:", err)
+	}
+
+	_, err = db.Exec("CREATE TABLE IF NOT EXISTS agents (id INTEGER PRIMARY KEY, hostname TEXT NOT NULL, port TEXT NOT NULL, last_ping TIMESTAMP DEFAULT CURRENT_TIMESTAMP, user TEXT);")
 	if err != nil {
 		log.Fatal("Error creating table:", err)
 	}
 
 	http.HandleFunc("/", orchestrateHandler)
+	http.HandleFunc("/login", loginHandler)
+	http.HandleFunc("/loginCheck", loginCheckHandler)
+	http.HandleFunc("/register", registHandler)
+	http.HandleFunc("/registerCheck", registerCheckHandler)
 	http.HandleFunc("/calculate", calcHandler)
 	http.HandleFunc("/agents", agentsHandler)
 	http.HandleFunc("/ping", pingHandler)
