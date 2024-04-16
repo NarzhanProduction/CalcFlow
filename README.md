@@ -5,9 +5,9 @@ Golang Project
 
 cначала скачаем нужное если go.mod барахлит:  
 go get github.com/mattn/go-sqlite3  
-go get github.com/gorilla/sessions
-go get github.com/golang-jwt/jwt/v5
-go get github.com/gorilla/mux
+go get github.com/gorilla/sessions  
+go get github.com/golang-jwt/jwt/v5  
+go get github.com/gorilla/mux  
 
 Далее, запускаем orchest.go: 
 go run backend/internal/orchestrator/orchest.go   
