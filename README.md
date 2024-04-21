@@ -8,6 +8,8 @@ go get github.com/mattn/go-sqlite3
 go get github.com/gorilla/sessions  
 go get github.com/golang-jwt/jwt/v5  
 go get github.com/gorilla/mux  
+go get google.golang.org/grpc/credentials/insecure 
+go get google.golang.org/grpc
 
 Далее, запускаем orchest.go: 
 go run backend/internal/orchestrator/orchest.go   
