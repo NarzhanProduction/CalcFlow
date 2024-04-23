@@ -13,7 +13,7 @@
             <form action="/agents" method="get">
                 <div class="form-group">
                     <label for="timeout">Таймаут (в секундах):</label>
-                    <input type="number" class="form-control" id="timeout" name="timeout" value="{{.TimeoutStr}}">
+                    <input type="number" pattern="^[1-9]{1}[0-9]*$" class="form-control" id="timeout" name="timeout" value="{{.TimeoutStr}}">
                 </div>
                 <button type="submit" class="btn btn-primary">Обновить таймаут</button>
             </form>
