@@ -21,23 +21,23 @@
 				</div>
 				<div class="form-group">
 					<label for="addition">Время выполнения сложения (в миллисекундах):</label>
-					<input type="text" class="form-control" id="addition" name="addition" value="{{.Addition}}"><br>
+					<input type="text" pattern="^[1-9]{1}[0-9]*$" class="form-control" id="addition" name="addition" value="{{.Addition}}"><br>
 				</div>
 				<div class="form-group">
 					<label for="subtraction">Время выполнения вычитания (в миллисекундах):</label>
-					<input type="text" class="form-control" id="subtraction" name="subtraction" value="{{.Subtraction}}"><br>
+					<input type="text" pattern="^[1-9]{1}[0-9]*$" class="form-control" id="subtraction" name="subtraction" value="{{.Subtraction}}"><br>
 				</div>
 				<div class="form-group">
 					<label for="multiplication">Время выполнения умножения (в миллисекундах):</label>
-					<input type="text" class="form-control" id="multiplication" name="multiplication" value="{{.Multiplication}}"><br>
+					<input type="text" pattern="^[1-9]{1}[0-9]*$" class="form-control" id="multiplication" name="multiplication" value="{{.Multiplication}}"><br>
 				</div>
 				<div class="form-group">
 					<label for="division">Время выполнения деления (в миллисекундах):</label>
-					<input type="text" class="form-control" id="division" name="division" value="{{.Division}}"><br>
+					<input type="text" pattern="^[1-9]{1}[0-9]*$" class="form-control" id="division" name="division" value="{{.Division}}"><br>
 				</div>
 				<div class="form-group">
 					<label for="exponent">Время выполнения степени (в миллисекундах):</label>
-					<input type="text" class="form-control" id="exponent" name="exponent" value="{{.Exponent}}"><br>
+					<input type="text" pattern="^[1-9]{1}[0-9]*$" class="form-control" id="exponent" name="exponent" value="{{.Exponent}}"><br>
 				</div>
 				<button type="submit" class="btn btn-primary">Вычислить</button>
 			</form>
