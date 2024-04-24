@@ -1,0 +1,19 @@
+services:
+  orchestrator:
+    container_name: orchestrator
+    ports:
+      - 8080:8080
+    build:
+      context: .
+      dockerfile: ./backend/internal/orchestrator/Dockerfile
+  agent:
+    container_name: agent
+    build:
+      context: .
+      dockerfile: ./backend/internal/agent/Dockerfile
+  db:
+    image: paradigmasoft/valentina-server
+    container_name: sqlite-container_name
+    volumes:
+      - ./backend/pkg/sql:/backend/pkg/sql
+    

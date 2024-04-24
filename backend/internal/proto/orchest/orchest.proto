@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package orchest;
+
+option go_package = "backend/internal/proto";
+
+service Orchestrator {
+  rpc Ping(PingRequest) returns (PingResponse) {}
+}
+
+message PingRequest {
+  string agent_id = 1;
+  string user = 2;
+}
+
+message PingResponse {
+  string message = 1;
+}

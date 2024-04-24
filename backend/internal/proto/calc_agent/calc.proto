@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package agentrpc;
+
+option go_package = "backend/internal/proto/calc_agent";
+
+service Agent {
+  rpc CalculateExpression (ExpressionRequest) returns (Result) {}
+}
+
+message ExpressionRequest {
+  string expression = 1;
+  string id = 2;
+  int64 addition = 3;
+  int64 subtraction = 4;
+  int64 multiplication = 5;
+  int64 division = 6;
+  int64 exponent = 7;
+}
+
+message Result {
+  string result = 1;
+}
