@@ -2,16 +2,8 @@ Golang Project
 
 Всё работает топорно конечно...
 
-cначала скачаем нужное если go.mod барахлит:  
-go get github.com/mattn/go-sqlite3  
-go get github.com/gorilla/sessions  
-go get github.com/golang-jwt/jwt/v5  
-go get github.com/gorilla/mux  
-go get google.golang.org/grpc/credentials/insecure 
-go get google.golang.org/grpc
-
-Далее, запускаем orchest.go: 
-go run backend/internal/orchestrator/orchest.go   
+Всего одна команда, хы(но перед этим скачайте Docker):  
+docker-compose up  
 
 Далее, вас встречает главная страница где вы можете ввести выражение и время выполнения операций +-*/^ . Выражения и их результат хранятся в бд и выводятся снизу главной страницы.     
 
